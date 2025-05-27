@@ -7,10 +7,9 @@ import { compression } from 'vite-plugin-compression2';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import type { Plugin } from 'vite';
 
-// https://vitejs.dev/config/
 export default defineConfig({
   server: {
-    host: 'localhost',
+    host: '0.0.0.0',
     port: 3090,
     strictPort: false,
     proxy: {
@@ -24,17 +23,16 @@ export default defineConfig({
       },
     },
   },
-  // Set the directory where environment variables are loaded from and restrict prefixes
   envDir: '../',
   envPrefix: ['VITE_', 'SCRIPT_', 'DOMAIN_', 'ALLOW_'],
   plugins: [
     react(),
     nodePolyfills(),
     VitePWA({
-      injectRegister: 'auto', // 'auto' | 'manual' | 'disabled'
-      registerType: 'autoUpdate', // 'prompt' | 'autoUpdate'
+      injectRegister: 'auto',
+      registerType: 'autoUpdate',
       devOptions: {
-        enabled: false, // disable service worker registration in development mode
+        enabled: false,
       },
       useCredentials: true,
       workbox: {
@@ -91,7 +89,7 @@ export default defineConfig({
         open: true,
         gzipSize: true,
         brotliSize: true,
-        template: 'treemap', // 'treemap' | 'sunburst' | 'network'
+        template: 'treemap',
       }),
   ].filter(Boolean),
   publicDir: './public',
@@ -101,11 +99,9 @@ export default defineConfig({
     minify: 'terser',
     rollupOptions: {
       preserveEntrySignatures: 'strict',
-      // external: ['uuid'],
       output: {
         manualChunks(id: string) {
           if (id.includes('node_modules')) {
-            // High-impact chunking for large libraries
             if (id.includes('@codesandbox/sandpack')) {
               return 'sandpack';
             }
@@ -172,7 +168,6 @@ export default defineConfig({
               return 'advanced-inputs';
             }
 
-            // Existing chunks
             if (id.includes('@radix-ui')) {
               return 'radix-ui';
             }
@@ -195,14 +190,11 @@ export default defineConfig({
               return 'headlessui';
             }
 
-            // Everything else falls into a generic vendor chunk.
             return 'vendor';
           }
-          // Create a separate chunk for all locale files under src/locales.
           if (id.includes(path.join('src', 'locales'))) {
             return 'locales';
           }
-          // Let Rollup decide automatically for any other files.
           return null;
         },
         entryFileNames: 'assets/[name].[hash].js',
@@ -214,10 +206,6 @@ export default defineConfig({
           return 'assets/[name].[hash][extname]';
         },
       },
-      /**
-       * Ignore "use client" warning since we are not using SSR
-       * @see {@link https://github.com/TanStack/query/pull/5161#issuecomment-1477389761 Preserve 'use client' directives TanStack/query#5161}
-       */
       onwarn(warning, warn) {
         if (warning.message.includes('Error when using sourcemap')) {
           return;
@@ -245,7 +233,6 @@ export function sourcemapExclude(opts?: SourcemapExclude): Plugin {
       if (opts?.excludeNodeModules && id.includes('node_modules')) {
         return {
           code,
-          // https://github.com/rollup/rollup/blob/master/docs/plugin-development/index.md#source-code-transformations
           map: { mappings: '' },
         };
       }

@@ -24,10 +24,9 @@ const routes = require('./routes');
 
 const { PORT, HOST, ALLOW_SOCIAL_LOGIN, DISABLE_COMPRESSION, TRUST_PROXY } = process.env ?? {};
 
-// Allow PORT=0 to be used for automatic free port assignment
 const port = isNaN(Number(PORT)) ? 3080 : Number(PORT);
 const host = HOST || 'localhost';
-const trusted_proxy = Number(TRUST_PROXY) || 1; /* trust first proxy by default */
+const trusted_proxy = Number(TRUST_PROXY) || 1;
 
 const app = express();
 
@@ -44,12 +43,32 @@ const startServer = async () => {
 
   await AppService(app);
 
+  let indexHTML = '';
   const indexPath = path.join(app.locals.paths.dist, 'index.html');
-  const indexHTML = fs.readFileSync(indexPath, 'utf8');
+  
+  if (process.env.NODE_ENV === 'production' && fs.existsSync(indexPath)) {
+    indexHTML = fs.readFileSync(indexPath, 'utf8');
+  } else if (process.env.NODE_ENV === 'development') {
+    indexHTML = `<!DOCTYPE html>
+<html lang="en-US">
+<head>
+  <meta charset="UTF-8">
+  <title>One Ring - Development Mode</title>
+</head>
+<body>
+  <div id="root">
+    <h1>One Ring API Server</h1>
+    <p>The API server is running in development mode.</p>
+    <p>Frontend is served by Vite at: <a href="http://${host === '0.0.0.0' ? 'localhost' : host}:3090">http://${host === '0.0.0.0' ? 'localhost' : host}:3090</a></p>
+  </div>
+</body>
+</html>`;
+  } else {
+    indexHTML = fs.readFileSync(indexPath, 'utf8');
+  }
 
   app.get('/health', (_req, res) => res.status(200).send('OK'));
 
-  /* Middleware */
   app.use(noIndex);
   app.use(errorController);
   app.use(express.json({ limit: '3mb' }));
@@ -64,7 +83,6 @@ const startServer = async () => {
     console.warn('Response compression has been disabled via DISABLE_COMPRESSION.');
   }
 
-  // Serve static assets with aggressive caching
   app.use(staticCache(app.locals.paths.dist));
   app.use(staticCache(app.locals.paths.fonts));
   app.use(staticCache(app.locals.paths.assets));
@@ -73,12 +91,10 @@ const startServer = async () => {
     console.warn('Social logins are disabled. Set ALLOW_SOCIAL_LOGIN=true to enable them.');
   }
 
-  /* OAUTH */
   app.use(passport.initialize());
   passport.use(jwtLogin());
   passport.use(passportLogin());
 
-  /* LDAP Auth */
   if (process.env.LDAP_URL && process.env.LDAP_USER_SEARCH_BASE) {
     passport.use(ldapLogin);
   }
@@ -88,7 +104,6 @@ const startServer = async () => {
   }
 
   app.use('/oauth', routes.oauth);
-  /* API Endpoints */
   app.use('/api/auth', routes.auth);
   app.use('/api/actions', routes.actions);
   app.use('/api/keys', routes.keys);
@@ -182,5 +197,4 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
-// export app for easier testing purposes
 module.exports = app;
