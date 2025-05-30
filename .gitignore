@@ -124,3 +124,7 @@ helm/**/.values.yaml
 
 # SAML Idp cert
 *.cert
+
+# dev
+/appdata
+librechat.yaml
