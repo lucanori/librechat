@@ -45,58 +45,126 @@
 
 ---
 
-## Task 2: Migrate Web Search from External Services to Self-Hosted SearXNG
+## Task 2: Integrate `web2md` for Advanced Web Search
 
-**Goal:** Replace the current web search setup (Serper, Firecrawl, Jina/Cohere) with a self-hosted SearXNG instance, accessible via its JSON API, and configurable via a `SEARXNG_URL` environment variable.
+**Goal:** Replace all current web search functionalities with a new integrated system composed of `web2md` (`ghcr.io/lucanori/web2md:rolling`), `SearXNG`, and `Browserless`, targeting the development environment. This system will implement a multi-step process: the chat model generates search queries, `web2md` fetches and converts relevant web content to Markdown using these queries (and its own configurable model), and this Markdown augments the user's original message as context for the final AI response. All Docker Compose changes will be made in [`docker-compose.dev.yml`](docker-compose.dev.yml), adhering to guidelines in [`DEVELOPMENT.md`](DEVELOPMENT.md).
 
-**Sub-task 2.1: Add and Configure SearXNG Service in Docker Compose**
-*   **Action:** Define a new `searxng` service in `docker-compose.yml`.
-    *   Use an official SearXNG Docker image (e.g., `searxng/searxng`).
-    *   Map a volume for SearXNG settings (e.g., `./searxng_config:/etc/searxng`).
-    *   Create a `settings.yml` file in the host's `./searxng_config` directory. Ensure this `settings.yml` includes `server:` `enable_json_response: true` (and any other desired SearXNG configurations, like a `secret_key` and enabled search engines).
-    *   Ensure the service is on the same Docker network as the `api` service.
-    *   Internally expose SearXNG's port (e.g., 8080).
-*   **Files to modify:** `docker-compose.yml`.
-*   **Files to create:** `searxng_config/settings.yml`.
+**Sub-task 2.1: Docker Compose Configuration for Web Search Stack (in [`docker-compose.dev.yml`](docker-compose.dev.yml))**
+1.  **Define `searxng` Service:**
+    *   **Action:** In [`docker-compose.dev.yml`](docker-compose.dev.yml), define the `searxng` service.
+        *   `container_name: searxng-dev`
+        *   `image: docker.io/searxng/searxng:latest`
+        *   `restart: unless-stopped`
+        *   `ports: ["8080:8080"]` (Adjust host port if 8080 is in use, ensure internal port is 8080)
+        *   `volumes: ["./searxng:/etc/searxng:rw"]` (User must provide `settings.yml` and `limiter.toml` in the local `./searxng` directory. The `settings.yml` must be configured by the user to include `server: enable_json_response: true` if `web2md` relies on SearXNG's JSON output, alongside other engine configurations.)
+        *   Ensure it's on the same Docker network as `api` and `web2md`.
+    *   **Files to modify:** [`docker-compose.dev.yml`](docker-compose.dev.yml).
+    *   **Files to create (user-provided):** User creates `./searxng/settings.yml` and `./searxng/limiter.toml`.
+2.  **Define `browserless` Service:**
+    *   **Action:** In [`docker-compose.dev.yml`](docker-compose.dev.yml), define the `browserless` service.
+        *   `container_name: browserless-dev`
+        *   `image: ghcr.io/browserless/chromium`
+        *   `restart: unless-stopped`
+        *   `ports: ["3000:3000"]` (Adjust host port if 3000 is in use)
+        *   `environment:`
+            *   `TOKEN=your_browserless_token_here` (User must replace with actual token for development)
+            *   `MAX_CONCURRENT_SESSIONS=10`
+            *   `TIMEOUT=60000`
+            *   `QUEUED=10`
+        *   Ensure it's on the same Docker network.
+    *   **Files to modify:** [`docker-compose.dev.yml`](docker-compose.dev.yml).
+3.  **Define `web2md` Service:**
+    *   **Action:** In [`docker-compose.dev.yml`](docker-compose.dev.yml), define the `web2md` service.
+        *   `container_name: web2md-dev`
+        *   `image: ghcr.io/lucanori/web2md:rolling`
+        *   `restart: unless-stopped`
+        *   `ports: ["8001:8000"]` (Using 8001 on host to avoid conflict, internal port of `web2md` assumed to be 8000, confirm from `web2md` docs).
+        *   `depends_on: [searxng, browserless]` (Referring to dev service names if they differ, e.g., `searxng-dev`, `browserless-dev`)
+        *   `volumes: []` (Add any persistent volumes if `web2md` requires them).
+        *   `environment:`
+            *   `SEARXNG_URL=http://searxng-dev:8080` (If `web2md` needs to know where SearXNG is, using dev service name).
+            *   `BROWSERLESS_URL=http://browserless-dev:3000` (Using dev service name).
+            *   `BROWSERLESS_TOKEN=your_browserless_token_here` (If `web2md` needs the token directly).
+            *   Any other specific environment variables required by `ghcr.io/lucanori/web2md:rolling`.
+        *   Ensure it's on the same Docker network.
+    *   **Files to modify:** [`docker-compose.dev.yml`](docker-compose.dev.yml).
+4.  **Investigate `web2md` API and Configuration:**
+    *   **Action:** Confirm the exact API endpoint(s) of `ghcr.io/lucanori/web2md:rolling` for initiating search/scraping, expected input (e.g., list of queries, original query), and output format (expected to be Markdown). Verify its internal port.
+    *   **Purpose:** Essential for correct integration in Sub-task 2.4.
 
-**Sub-task 2.2: Configure LibreChat API Service for SearXNG**
-*   **Action:** Modify the `api` service definition in `docker-compose.yml`.
-    *   Add `searxng` to the `depends_on` list for the `api` service.
-    *   Add the `SEARXNG_URL` environment variable to the `api` service, pointing to the internal SearXNG search endpoint (e.g., `SEARXNG_URL=http://searxng:8080/search`).
-*   **Files to modify:** `docker-compose.yml`.
+**Sub-task 2.2: Configure LibreChat API Service for New Web Search Stack (in [`docker-compose.dev.yml`](docker-compose.dev.yml))**
+*   **Action:** Modify the `api` service definition in [`docker-compose.dev.yml`](docker-compose.dev.yml).
+    *   Add `web2md` (referring to its dev service name, e.g., `web2md-dev`) to the `depends_on` list for the `api` service.
+    *   Add necessary environment variables to the `api` service:
+        *   `WEB2MD_URL=http://web2md-dev:8000/api/scrape` (Example endpoint, using dev service name, confirm actual from `web2md` docs).
+        *   `NUM_WEB_SEARCH_QUERIES=3` (Default value, user-configurable).
+        *   `WEB2MD_PROCESSING_MODEL_NAME=default_model` (Model used by `web2md` for choosing sites, user-configurable, confirm actual env var name from `web2md` docs).
+*   **Files to modify:** [`docker-compose.dev.yml`](docker-compose.dev.yml).
 
-**Sub-task 2.3: Update Environment Configuration (`.env` and `.env.example`)**
+**Sub-task 2.3: Update Environment Configuration (`.env.dev.example` and development `.env` file)**
 *   **Action:**
-    *   In the project's `.env` file:
-        *   Remove or comment out `SERPER_API_KEY`, `FIRECRAWL_API_KEY`, `FIRECRAWL_API_URL` (if used), `JINA_API_KEY`, `COHERE_API_KEY`.
-        *   Add `SEARXNG_URL=http://searxng:8080/search` (or the user-configured value).
-    *   In the `.env.example` file:
-        *   Comment out or remove lines for `SERPER_API_KEY`, `FIRECRAWL_API_KEY`, etc.
-        *   Add an entry like `# SEARXNG_URL=http://localhost:8080/search` (or `http://searxng:8080/search`).
-*   **Files to modify:** `.env`, `.env.example`.
+    *   In the project's development `.env` file (e.g., a copy of [`.env.dev.example`](.env.dev.example) used for local development):
+        *   Remove/comment out ALL previous search provider API keys and URLs.
+        *   Add `WEB2MD_URL=http://web2md-dev:8000/api/scrape` (or the appropriate URL for local dev, matching the service name in `docker-compose.dev.yml`).
+        *   Add `NUM_WEB_SEARCH_QUERIES=3`.
+        *   Add `WEB2MD_PROCESSING_MODEL_NAME=default_model`.
+        *   Add `BROWSERLESS_TOKEN=your_browserless_token_here` (for user reference, ensure this matches token in `browserless-dev` service).
+    *   In the [`.env.dev.example`](.env.dev.example) file:
+        *   Comment out or remove lines for all previous search provider keys and URLs.
+        *   Add entries for new variables:
+            *   `# WEB2MD_URL=http://web2md-dev:8000/api/scrape` (or `http://localhost:8001/api/scrape` if using host port)
+            *   `# NUM_WEB_SEARCH_QUERIES=3`
+            *   `# WEB2MD_PROCESSING_MODEL_NAME=default_model`
+            *   `# BROWSERLESS_TOKEN="your_actual_token_for_browserless_service"`
+*   **Files to modify:** Development `.env` file, [`.env.dev.example`](.env.dev.example).
 
-**Sub-task 2.4: LibreChat Application Code Adjustments for SearXNG API**
-*   **Action:** Ensure the LibreChat application code that handles web search:
-    *   Uses the `SEARXNG_URL` environment variable.
-    *   Makes GET requests to this URL.
-    *   Appends necessary query parameters, especially `format=json` and the user's query (e.g., `q={user_query}`). Other parameters like `categories` or `pageno` can be considered.
-    *   Correctly parses the JSON response from SearXNG.
-*   **Files to potentially modify:** Specific files in `api/` responsible for web search integration.
+**Sub-task 2.4: LibreChat Application Code Adjustments for New Web Search Flow**
+*   **Action:** Overhaul the web search logic within the `api/` directory to implement the new multi-step process.
+    1.  **Remove Obsolete Search Tool Integrations:**
+        *   Delete specific search tool files: [`api/app/clients/tools/structured/GoogleSearch.js`](api/app/clients/tools/structured/GoogleSearch.js:43), [`TavilySearch.js`](api/app/clients/tools/structured/TavilySearch.js:12), [`AzureAISearch.js`](api/app/clients/tools/structured/AzureAISearch.js:81), [`TraversaalSearch.js`](api/app/clients/tools/structured/TraversaalSearch.js:42). Review and remove any others.
+        *   In [`api/app/clients/tools/util/handleTools.js`](api/app/clients/tools/util/handleTools.js:142), remove all logic related to loading/configuring these deleted tools and the generic `createSearchTool` / `loadWebSearchAuth` pathways for SerpAPI, Firecrawl, etc. The concept of the AI model *calling* a search tool is being replaced.
+    2.  **Implement New Orchestration Logic (likely in [`api/server/services/ToolService.js`](api/server/services/ToolService.js:186) or a new dedicated service):**
+        *   **Step A: Conditional Execution:** If web search is enabled for the user's message:
+        *   **Step B: Generate Search Queries:**
+            *   Access `NUM_WEB_SEARCH_QUERIES` from environment variables.
+            *   Make an LLM call using the *user-selected chat model* to generate `N` distinct search queries based on the user's original message/question.
+        *   **Step C: Invoke `web2md`:**
+            *   Access `WEB2MD_URL` and `WEB2MD_PROCESSING_MODEL_NAME`.
+            *   Send the generated search queries (and potentially `WEB2MD_PROCESSING_MODEL_NAME` if `web2md` API supports it) to the `web2md` service.
+            *   Receive the aggregated Markdown content from `web2md`.
+        *   **Step D: Augment User's Original Message:**
+            *   Prepend or append the collected Markdown from `web2md` to the user's original message text. This forms the new, augmented prompt.
+        *   **Step E: Proceed with Final Answer Generation:**
+            *   The augmented prompt is then passed to the user-selected chat model (e.g., via `AskController.js` using the `client.sendMessage(augmentedText, messageOptions)` pattern) to generate the final response.
+    3.  **Client-Side Indication (Optional but Recommended):**
+        *   Consider how to inform the client (UI) that web searching has occurred and potentially display the generated queries or sources used. This might involve adapting parts of the old `sendMessage` (SSE) logic in [`api/server/utils/streamResponse.js`](api/server/utils/streamResponse.js:23) or [`api/server/services/Tools/search.js`](api/server/services/Tools/search.js:10) to send special messages or metadata about the search process, even if the final Markdown is part of the main prompt.
+*   **Files to modify/create:** [`api/server/services/ToolService.js`](api/server/services/ToolService.js:186) (major changes or new service), [`api/app/clients/tools/util/handleTools.js`](api/app/clients/tools/util/handleTools.js:142) (significant removal/simplification), [`api/server/controllers/AskController.js`](api/server/controllers/AskController.js:17) (to handle the augmented prompt), potentially new files for orchestration.
 
 **Sub-task 2.5: Documentation Updates**
-*   **Action:** Update project documentation (`README.md`, setup guides, this plan file):
-    *   Reflect removal of previous search providers.
-    *   Detail SearXNG setup: `docker-compose.yml` service, `SEARXNG_URL` variable, and the critical `enable_json_response: true` in `searxng_config/settings.yml`.
-    *   Mention the API interaction: GET to `/search` with `format=json`.
-*   **Files to modify:** `README.md`, other docs, `ONERING_MIGRATION_PLAN.md`.
+*   **Action:** Update all relevant project documentation:
+    *   Main `README.md`, setup guides, [`PROJECT_STRUCTURE.md`](.task/PROJECT_STRUCTURE.md).
+    *   Detail the new Docker Compose setup for `web2md`, `searxng`, and `browserless`.
+    *   Clearly document all new environment variables: `WEB2MD_URL`, `NUM_WEB_SEARCH_QUERIES`, `WEB2MD_PROCESSING_MODEL_NAME`, and the user-provided `BROWSERLESS_TOKEN` for the `browserless` service.
+    *   Explain the new multi-step web search flow: query generation, `web2md` processing, context augmentation.
+    *   Instruct users on providing `./searxng/settings.yml` and `./searxng/limiter.toml`, and the importance of `enable_json_response: true` in `settings.yml` if applicable.
+    *   Remove all references to old search providers and their API keys.
+    *   Update this task description within [`.task/ONERING_MIGRATION_PLAN.md`](.task/ONERING_MIGRATION_PLAN.md) with any refined details from implementation.
+*   **Files to modify:** `README.md`, other setup/developer guides, [`PROJECT_STRUCTURE.md`](.task/PROJECT_STRUCTURE.md), [`.task/ONERING_MIGRATION_PLAN.md`](.task/ONERING_MIGRATION_PLAN.md).
 
 **Sub-task 2.6: Testing**
 *   **Action:**
-    *   Restart Docker Compose stack.
-    *   Verify SearXNG container starts, logs show `enable_json_response` is active.
-    *   Test web search in LibreChat.
-    *   Inspect network requests from LibreChat `api` to SearXNG to confirm correct URL and parameters.
-    *   Check `api` and `searxng` logs.
+    *   Build/pull new Docker images and restart the full Docker Compose stack (`api`, `web2md`, `searxng`, `browserless`).
+    *   Verify all containers start correctly and check their logs for errors.
+    *   Confirm `web2md` can connect to `searxng` and `browserless`.
+    *   Test the end-to-end web search flow in LibreChat:
+        *   Enable web search.
+        *   Send a query that should trigger it.
+        *   Verify (e.g., through logs or debug output) that the chat model generates multiple queries.
+        *   Verify `web2md` is called with these queries.
+        *   Verify `web2md` returns Markdown.
+        *   Verify the original user message is augmented with this Markdown before being sent to the chat model for the final answer.
+        *   Inspect network requests between services.
+    *   Check `api` service logs for errors throughout this new flow.
 
 ---
 
@@ -160,18 +228,17 @@
 ---
 
 DA FARE PER MVP:
-- web search usiamo firecrawl in locale con container docker
-- aggiungere barra laterale a sinistra con funzioni (guardare funzioni one ring)
-- come provider api di modelli usiamo openrouter, ma riutilizziamo i componenti per suddividere in categorie gli altri provider che vengono usati attraverso openrouter
+- [campo] aggiungere barra laterale a sinistra con funzioni (guardare funzioni one ring)
+- [campo] come provider api di modelli usiamo openrouter, ma riutilizziamo i componenti per suddividere in categorie gli altri provider che vengono usati attraverso openrouter
 - sezione generazione immagini non avanzata con provider flux, imagen 
-- speech to text con groq
-- deepsearch con sonar usando openrouter, dropdown difianco a reasoning, stesso stile per i link
+- [luca] speech to text con groq
+- [luca] deepsearch con sonar usando openrouter, dropdown difianco a reasoning, stesso stile per i link
 - filtrare paramentri agente, costruttore agente
 - nascondere prompt custom e segnalibri
-- aggiungere tabelle per costi chiamate api, poi creare hook, una volta rispsota da openrouter, prendere message id di openrouter e chiedere a openrouter il prezzo di quel message. dopo viene inserito nel db
-- segnare nel db per ogni messaggio il message id di openrouter per fare check del prezzo veritiero e finale del costo mensile
-- tabella dei costi sarà divisa per utente (usando appunto i message id salvati nel db e associati al singolo utente)
-- costo totale chat nella preview
+- [campo] aggiungere tabelle per costi chiamate api, poi creare hook, una volta rispsota da openrouter, prendere message id di openrouter e chiedere a openrouter il prezzo di quel message. dopo viene inserito nel db
+- [campo] segnare nel db per ogni messaggio il message id di openrouter per fare check del prezzo veritiero e finale del costo mensile
+- [campo] tabella dei costi sarà divisa per utente (usando appunto i message id salvati nel db e associati al singolo utente)
+- [campo] costo totale chat nella preview
 
 DA FARE SUCCESSIVAMENTE ALL'MVP:
 - cambiare da meilisearch a typesense

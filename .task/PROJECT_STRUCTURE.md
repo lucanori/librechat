@@ -147,3 +147,131 @@ To inspect the raw response received from an LLM (including the message ID from 
 3.  **Viewing the Log:** When the application is run (e.g., in development mode with `npm run backend:dev`), this log statement will output the full `response` object to the console where the backend process is running. This object will contain the `messageId` and other details provided by the LLM.
     *   **Specific to OpenAI/OpenRouter:** If you are using an OpenAI-compatible endpoint (like OpenRouter), the [`api/app/clients/OpenAIClient.js`](api/app/clients/OpenAIClient.js) itself logs the entire raw `chatCompletion` object received from the API around line 1508 (e.g., `logger.debug('[OpenAIClient] chatCompletion response', chatCompletion);`). This `chatCompletion` object is the complete data structure returned by the OpenAI/OpenRouter API, containing all details of the response, including usage, choices, and the message ID (often as `id` within the main `chatCompletion` object or within a `choices` array element). The `response` object logged in the `AskController` is typically a processed/formatted version derived from this `chatCompletion` object.
 4.  **Note on Production:** Remember to remove or disable such verbose debug logs in a production environment to avoid excessive logging and potential performance impacts.
+
+### 6.3. Web Search Implementation Flow
+
+The web search functionality in LibreChat allows the application to query external search engines and incorporate the results into the AI's responses. This is typically implemented as a "tool" that the AI model can choose to use.
+
+1.  **Tool Invocation by AI Model:**
+    *   When an AI model determines that it needs to perform a web search to answer a user's query, it signals its intent to use a web search tool.
+    *   This is handled by the `StreamRunManager` in [`api/server/services/Runs/StreamRunManager.js`](api/server/services/Runs/StreamRunManager.js:1). The `onRunRequiresAction` method (lines 549-590) processes these "tool calls."
+
+2.  **Tool Execution Orchestration (`ToolService`):**
+    *   The `StreamRunManager` calls `processRequiredActions` (line 568) which is defined in [`api/server/services/ToolService.js`](api/server/services/ToolService.js:186).
+    *   The `processRequiredActions` function in `ToolService.js` is responsible for:
+        *   Identifying the specific tool to be called (e.g., `Tools.web_search`).
+        *   Loading the appropriate tool implementation using the `loadTools` function (defined in [`api/app/clients/tools/util/handleTools.js`](api/app/clients/tools/util/handleTools.js:142)).
+
+3.  **Generic Web Search Tool Handling (`handleTools.js`):**
+    *   The `loadTools` function in [`api/app/clients/tools/util/handleTools.js`](api/app/clients/tools/util/handleTools.js:142) handles the `Tools.web_search` case (lines 271-297).
+    *   It loads authentication details using `loadWebSearchAuth`.
+    *   It then calls `createSearchTool` (from the `@librechat/agents` package, line 290) which is responsible for creating an instance of the search tool. This `createSearchTool` likely acts as an abstraction layer that can use different search providers based on configuration.
+    ```javascript
+    // Snippet from api/app/clients/tools/util/handleTools.js
+    else if (tool === Tools.web_search) {
+      const webSearchConfig = options?.req?.app?.locals?.webSearch;
+      const result = await loadWebSearchAuth({
+        userId: user,
+        loadAuthValues,
+        webSearchConfig,
+      });
+      const { onSearchResults, onGetHighlights } = options?.[Tools.web_search] ?? {};
+      requestedTools[tool] = async () => {
+        // ... (tool context map setup) ...
+        return createSearchTool({
+          ...result.authResult,
+          onSearchResults,
+          onGetHighlights,
+          logger,
+        });
+      };
+      continue;
+    }
+    ```
+
+4.  **Specific Search Provider Implementation (e.g., Google, Tavily):**
+    *   The actual HTTP requests to external search engine APIs are made within the `_call` methods of specific tool classes located in `api/app/clients/tools/structured/`.
+    *   These classes extend `Tool` from `@langchain/core/tools`.
+
+    *   **Google Search Example** ([`api/app/clients/tools/structured/GoogleSearch.js`](api/app/clients/tools/structured/GoogleSearch.js:43)):
+        ```javascript
+        async _call(input) {
+          // ... validation ...
+          const { query, max_results = 5 } = validationResult.data;
+          const response = await fetch(
+            `https://www.googleapis.com/customsearch/v1?key=${this.apiKey}&cx=${
+              this.searchEngineId
+            }&q=${encodeURIComponent(query)}&num=${max_results}`,
+            // ... headers ...
+          );
+          // ... error handling and response processing ...
+          return JSON.stringify(json);
+        }
+        ```
+
+    *   **Tavily Search Example** ([`api/app/clients/tools/structured/TavilySearch.js`](api/app/clients/tools/structured/TavilySearch.js:12) - within `tool` function):
+        ```javascript
+        async (input) => {
+          const { query, ...rest } = input;
+          const requestBody = { /* ... api_key, query, etc. ... */ };
+          const response = await fetch('https://api.tavily.com/search', {
+            method: 'POST',
+            // ... headers and body ...
+          });
+          // ... error handling and response processing ...
+          return JSON.stringify(json);
+        }
+        ```
+    *   **Azure AI Search Example** ([`api/app/clients/tools/structured/AzureAISearch.js`](api/app/clients/tools/structured/AzureAISearch.js:81)):
+        ```javascript
+        async _call(data) {
+          const { query } = data;
+          try {
+            // ... setup searchOption ...
+            const searchResults = await this.client.search(query, searchOption);
+            // ... process results ...
+            return JSON.stringify(resultDocuments);
+          } catch (error) { /* ... error handling ... */ }
+        }
+        ```
+    *   **Traversaal Search Example** ([`api/app/clients/tools/structured/TraversaalSearch.js`](api/app/clients/tools/structured/TraversaalSearch.js:42)):
+        ```javascript
+        async _call({ query }, _runManager) {
+          const body = { query: [query] };
+          try {
+            const response = await fetch('https://api-ares.traversaal.ai/live/predict', {
+              method: 'POST',
+              // ... headers and body ...
+            });
+            // ... error handling and response processing ...
+            return result;
+          } catch (error) { /* ... error handling ... */ }
+        }
+        ```
+
+5.  **Handling Search Results:**
+    *   Once the search tool (e.g., `createSearchTool`) completes, its output is returned to the `StreamRunManager`.
+    *   The `createOnSearchResults` function in [`api/server/services/Tools/search.js`](api/server/services/Tools/search.js:10) is responsible for processing these search results and formatting them as attachments to be streamed back to the client.
+    ```javascript
+    // Snippet from api/server/services/Tools/search.js
+    function createOnSearchResults(res) {
+      // ... context setup ...
+      function onSearchResults(results, runnableConfig) {
+        // ... processes results ...
+        const attachment = buildAttachment(context);
+        // ... streams attachment to response ...
+      }
+      // ...
+      return { onSearchResults, onGetHighlights };
+    }
+
+    function buildAttachment(context) {
+      return {
+        // ... messageId, toolCallId, etc. ...
+        type: Tools.web_search,
+        [Tools.web_search]: context.searchResultData,
+      };
+    }
+    ```
+
+This flow allows LibreChat to flexibly integrate with various web search providers and present the results to the user in a structured way.
