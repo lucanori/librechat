@@ -2,12 +2,12 @@ import path from 'path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
-import { visualizer } from 'rollup-plugin-visualizer';
 import { compression } from 'vite-plugin-compression2';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import type { Plugin } from 'vite';
 
-export default defineConfig({
+// https://vitejs.dev/config/
+export default defineConfig(({ command }) => ({
   server: {
     host: '0.0.0.0',
     port: 3090,
@@ -35,13 +35,21 @@ export default defineConfig({
         enabled: false,
       },
       useCredentials: true,
+      includeManifestIcons: false,
       workbox: {
-        globPatterns: ['**/*'],
+        globPatterns: [
+          '**/*.{js,css,html}',
+          'assets/favicon*.png',
+          'assets/icon-*.png',
+          'assets/apple-touch-icon*.png',
+          'assets/maskable-icon.png',
+          'manifest.webmanifest',
+        ],
         globIgnores: ['images/**/*', '**/*.map'],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
-        navigateFallbackDenylist: [/^\/oauth/],
+        navigateFallbackDenylist: [/^\/oauth/, /^\/api/],
       },
-      includeAssets: ['**/*'],
+      includeAssets: [],
       manifest: {
         name: 'LibreChat',
         short_name: 'LibreChat',
@@ -83,16 +91,8 @@ export default defineConfig({
     compression({
       threshold: 10240,
     }),
-    process.env.VITE_BUNDLE_ANALYSIS === 'true' &&
-      visualizer({
-        filename: 'dist/bundle-analysis.html',
-        open: true,
-        gzipSize: true,
-        brotliSize: true,
-        template: 'treemap',
-      }),
-  ].filter(Boolean),
-  publicDir: './public',
+  ],
+  publicDir: command === 'serve' ? './public' : false,
   build: {
     sourcemap: process.env.NODE_ENV === 'development',
     outDir: './dist',
@@ -218,10 +218,10 @@ export default defineConfig({
   resolve: {
     alias: {
       '~': path.join(__dirname, 'src/'),
-      $fonts: '/fonts',
+      $fonts: path.resolve(__dirname, 'public/fonts'),
     },
   },
-});
+}));
 
 interface SourcemapExclude {
   excludeNodeModules?: boolean;
